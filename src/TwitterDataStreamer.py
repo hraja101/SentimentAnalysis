@@ -7,9 +7,10 @@ from random import randrange
 import requests
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
+from requests.models import Response
 from tweepy import OAuthHandler, API
 from tweepy.streaming import StreamListener, Stream
-
+import socket
 import TwitterKeys
 
 IS_PY3 = sys.version_info >= (3, 0)
@@ -18,28 +19,20 @@ if not IS_PY3:
     print("Sorry, requires Python 3.")
     sys.exit(1)
 
+# Use or create a twitterDB
 MONGO_HOST = 'mongodb://localhost/twitterSentiment'
-blacklist = [
-    '[document]',
-    'noscript',
-    'header',
-    'html',
-    'meta',
-    'head',
-    'input',
-    'script',
-    'style',
-    '/n'
-]
+mongoClient = MongoClient(MONGO_HOST)
+twitterDB = mongoClient.twitterSentiment
+tweet_collection = twitterDB.tweetSentiment
 
 
 # Override the stream class
 class TwitterStreamListener(StreamListener):
+    blacklist = ['[document]', 'noscript', 'header', 'html', 'meta', 'head', 'input', 'script', 'style', '/n']
 
     def __init__(self):
         self.count = 0
         self.max_count = 100  # max 8000 tweets
-        self.mongoClient = MongoClient(MONGO_HOST)
 
     def on_data(self, raw_data):
         try:
@@ -49,22 +42,18 @@ class TwitterStreamListener(StreamListener):
 
         else:
             try:
-                # Use or create a twitterDB
-                twitterDB = self.mongoClient.twitterSentiment
-                collection = twitterDB.tweetSentiment
                 twitter_data_dict = json.loads(raw_data)
 
                 if twitter_data_dict['retweeted'] or 'RT @' in twitter_data_dict['text']:
                     return
                 twitter_data_text = twitter_data_dict["text"]
-                collection.insert(twitter_data_dict)
+                tweet_collection.insert_one(twitter_data_dict)
                 self.count += 1
 
                 if twitter_data_text is None:
                     return True  # continue with next data stream
 
                 if self.count == self.max_count:
-
                     print(self.count, ": tweets reached", "expected maximum tweets:", self.max_count)
                     return False  # disconnect stream ?
 
@@ -75,31 +64,28 @@ class TwitterStreamListener(StreamListener):
 
                     for url in tweet_urls:
                         try:
-                            output = ''
-                            response = requests.get(url)
+                            time.sleep(randrange(2, 10))
+                            response: Response = requests.get(url)
+                            print('tweet No:', self.count, 'url',  response.url)
 
+                        except socket.error:
+                            print("connection refused:", requests.get(url, verify=False).url)
+                            return True
+
+                        else:
+                            output = ''
                             if 'https://twitter.com' in response.url:
                                 pass
                             else:
                                 html_page = response.content
-                                time.sleep(randrange(1, 5))
                                 soup = BeautifulSoup(html_page, 'html.parser')
                                 text = soup.find_all(text=True)
                                 for t in text:
-                                    if t.parent.name not in blacklist:
+                                    if t.parent.name not in TwitterStreamListener.blacklist:
                                         output += '{} '.format(t)
-                                print('url:', response.url, 'content:', output)
-
                                 Query = {"text": twitter_data_text}
-                                values = {"$set": {"text": twitter_data_text+output}}
-
-                                collection.update_one(Query, values)
-                                cursor = collection.find()
-                                for record in cursor:
-                                    print(record)
-
-                        except Exception:
-                            print(url)
+                                values = {"$set": {"text": twitter_data_text + output}}
+                                tweet_collection.update_one(Query, values)
 
             except KeyError:
                 return True  # continue if there is no text
@@ -132,5 +118,7 @@ if __name__ == '__main__':
 
     # stream instance
     tweepy_stream: Stream = Stream(auth=auth, listener=tweet_listener)
-
     tweepy_stream.filter(languages=["en"], track=track_list)
+
+    for x in tweet_collection.find({}, {"text": 1}):
+        print(x)
