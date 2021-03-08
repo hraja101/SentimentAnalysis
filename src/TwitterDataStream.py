@@ -5,13 +5,16 @@ import time
 from random import randrange
 
 import requests
+from requests.exceptions import ConnectionError, RetryError, \
+    SSLError, HTTPError, ConnectTimeout, TooManyRedirects, InvalidHeader
 from bs4 import BeautifulSoup
 from pymongo import MongoClient
 from requests.models import Response
-from tweepy import OAuthHandler, API
-from tweepy.streaming import StreamListener, Stream
+
+from tweepy.streaming import StreamListener
 import socket
-import TwitterKeys
+from socket import gaierror
+
 
 IS_PY3 = sys.version_info >= (3, 0)
 
@@ -23,7 +26,7 @@ if not IS_PY3:
 MONGO_HOST = 'mongodb://localhost/twitterSentiment'
 mongoClient = MongoClient(MONGO_HOST)
 twitterDB = mongoClient.twitterSentiment
-tweet_collection = twitterDB.tweetSentiment
+TweetCollection = twitterDB.tweetSentiment
 
 
 # Override the stream class
@@ -32,10 +35,13 @@ class TwitterStreamListener(StreamListener):
 
     def __init__(self):
         self.count = 0
-        self.max_count = 100  # max 8000 tweets
+        self.max_count = 150  # max 300 tweets
 
     def on_data(self, raw_data):
         try:
+            # if TweetCollection.find({}, {"text": 1}):
+            #     return False
+            # else:
             raw_data
         except TypeError:
             print("Completed:")
@@ -47,7 +53,7 @@ class TwitterStreamListener(StreamListener):
                 if twitter_data_dict['retweeted'] or 'RT @' in twitter_data_dict['text']:
                     return
                 twitter_data_text = twitter_data_dict["text"]
-                tweet_collection.insert_one(twitter_data_dict)
+                TweetCollection.insert_one(twitter_data_dict)
                 self.count += 1
 
                 if twitter_data_text is None:
@@ -70,7 +76,68 @@ class TwitterStreamListener(StreamListener):
 
                         except socket.error:
                             print("connection refused:", requests.get(url, verify=False).url)
-                            return True
+                            continue
+
+                        except requests.packages.urllib3.exceptions.MaxRetryError as e:
+                            print(str(e))
+                            continue
+
+                        except requests.ConnectionError as e:
+                            print(
+                                "OOPS!! Connection Error. Make sure you are connected to Internet. Technical Details "
+                                "given below.\n")
+                            print(str(e))
+                            continue
+
+                        except requests.Timeout as e:
+                            print("OOPS!! Timeout Error")
+                            print(str(e))
+                            continue
+
+                        except ConnectionError as e:
+                            print("OOPS!! connection Error")
+                            print(str(e))
+                            continue
+
+                        except SSLError as e:
+                            print("OOPS!! SSL Error")
+                            print(str(e))
+                            continue
+
+                        except RetryError as e:
+                            print("OOPS!! retry Error")
+                            print(str(e))
+                            continue
+
+                        except HTTPError as e:
+                            print("OOPS!! http Error")
+                            print(str(e))
+                            continue
+
+                        except gaierror as e:
+                            print("OOPS!! gai Error")
+                            print(str(e))
+                            continue
+
+                        except OSError as e:
+                            print("os error, connection refused")
+                            print(str(e))
+                            continue
+
+                        except ConnectTimeout as e:
+                            print("os error, connection refused")
+                            print(str(e))
+                            continue
+
+                        except TooManyRedirects as e:
+                            print("os error, connection refused")
+                            print(str(e))
+                            continue
+
+                        except InvalidHeader as e:
+                            print("os error, connection refused")
+                            print(str(e))
+                            continue
 
                         else:
                             output = ''
@@ -85,7 +152,7 @@ class TwitterStreamListener(StreamListener):
                                         output += '{} '.format(t)
                                 Query = {"text": twitter_data_text}
                                 values = {"$set": {"text": twitter_data_text + output}}
-                                tweet_collection.update_one(Query, values)
+                                TweetCollection.update_one(Query, values)
 
             except KeyError:
                 return True  # continue if there is no text
@@ -101,24 +168,4 @@ class TwitterStreamListener(StreamListener):
         return True
 
 
-if __name__ == '__main__':
 
-    auth = OAuthHandler(TwitterKeys.CONSUMER_API_KEY, TwitterKeys.CONSUMER_API_SECRET)
-    auth.set_access_token(TwitterKeys.CONSUMER_ACCESS_TOKEN, TwitterKeys.CONSUMER_ACCESS_TOKEN_SECRET)
-    track_list = ['#COVID-19', '#COVID', '#vaccine']
-
-    # TODO- to fetch user details
-    api = API(auth)
-
-    if not api.verify_credentials():
-        raise Exception('Unable to verify credentials with remote server: check your twitter API keys:')
-
-    # create an instance of the twitter stream listener
-    tweet_listener = TwitterStreamListener()
-
-    # stream instance
-    tweepy_stream: Stream = Stream(auth=auth, listener=tweet_listener)
-    tweepy_stream.filter(languages=["en"], track=track_list)
-
-    for x in tweet_collection.find({}, {"text": 1}):
-        print(x)
